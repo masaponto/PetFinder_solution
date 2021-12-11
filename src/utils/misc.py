@@ -1,16 +1,17 @@
 import os
-import numpy as np
 import random
-import torch
 import logging
 import logging.handlers
 from contextlib import contextmanager
 import time
-import git
 from pathlib import Path
+import git
 
 
 def seed_everything(seed=42):
+    import torch
+    import numpy as np
+
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
@@ -32,13 +33,13 @@ class LoggerFactory(metaclass=Singleton):
     def __init__(self, log_path: str = None, loglevel=logging.INFO):
         self.loglevel = loglevel
         if log_path is None:
-            self.log_path = Path('./log')
+            self.log_path = Path("./log")
         else:
             self.log_path = Path(log_path)
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def getLogger(self, log_name):
-        fmt = '%(asctime)s [%(name)s|%(levelname)s] %(message)s'
+        fmt = "%(asctime)s [%(name)s|%(levelname)s] %(message)s"
         formatter = logging.Formatter(fmt)
         logger = logging.getLogger(log_name)
 
@@ -48,7 +49,9 @@ class LoggerFactory(metaclass=Singleton):
         logger.addHandler(handler)
 
         # add file Handler
-        handler = logging.handlers.RotatingFileHandler(filename=self.log_path, maxBytes=2 * 1024 * 1024 * 1024, backupCount=10)
+        handler = logging.handlers.RotatingFileHandler(
+            filename=self.log_path, maxBytes=2 * 1024 * 1024 * 1024, backupCount=10
+        )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
@@ -60,9 +63,9 @@ class LoggerFactory(metaclass=Singleton):
 @contextmanager
 def timer(name, logger):
     t0 = time.time()
-    logger.debug(f'[{name}] start')
+    logger.debug(f"[{name}] start")
     yield
-    logger.debug(f'[{name}] done in {time.time() - t0:.0f} s')
+    logger.debug(f"[{name}] done in {time.time() - t0:.0f} s")
 
 
 def get_current_commit_hash():
