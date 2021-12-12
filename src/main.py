@@ -190,4 +190,4 @@ def main():
     prediction = inference(df_test, swint, svr)
 
     df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    make_submission(df_test, prediction)
+    make_submission(df_test, prediction, ".")
