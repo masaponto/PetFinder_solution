@@ -1,4 +1,4 @@
 .PHONY: build
 build:
 	poetry run python encode.py
-	cat .build/script.py
+	cat .build/script.py > output.py

@@ -4,7 +4,6 @@ from pprint import pprint
 from glob import glob
 from tqdm import tqdm
 from box import Box
-from tqdm import tqdm
 import numpy as np
 import pandas as pd
 
@@ -18,13 +17,13 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
 
 # SwinTransformer
-from models.swint import Model
+from src.models import swint
 
 # SVR
 import cuml
 from cuml.svm import SVR
 
-from dataset import PetfinderDataModule
+from src.dataset import PetfinderDataModule
 
 warnings.filterwarnings("ignore")
 
@@ -83,7 +82,7 @@ def train_swint(df):
     train_df = train_df.reset_index(drop=True)
     val_df = val_df.reset_index(drop=True)
     datamodule = PetfinderDataModule(train_df, val_df, config)
-    model = Model(config)
+    model = swint.Model(config)
     earystopping = EarlyStopping(monitor="val_loss")
     lr_monitor = callbacks.LearningRateMonitor()
     loss_checkpoint = callbacks.ModelCheckpoint(
@@ -109,7 +108,7 @@ def train_swint(df):
 
 def train_svr(df, embed):
     svr = SVR(C=config.svr.C)
-    svr.fit(embed, df["Pawpularity"])
+    svr.fit(embed.astype('float32'), df["Pawpularity"].astype('int32'))
 
     return svr
 
@@ -119,7 +118,7 @@ def make_swint_embed(df, model):
     config.train_loader.batch_size = 10
     config.train_loader.drop_last = False
     datamodule = PetfinderDataModule(df, None, config)
-    for org_train_image, label in tqdm.tqdm(datamodule.train_dataloader()):
+    for org_train_image, label in tqdm(datamodule.train_dataloader()):
         images = model.transform["val"](org_train_image)
         images = images.to(model.device)
         emb = model.backbone.forward(images).squeeze(1)
@@ -128,7 +127,7 @@ def make_swint_embed(df, model):
 
     config.train_loader.drop_last = True
 
-    embed = np.concatenate(embed).astype(np.float32)
+    embed = np.concatenate(embed).astype('float32')
     return embed
 
 
@@ -165,7 +164,7 @@ def make_submission(test, final_preds, path):
     df_pred = pd.DataFrame()
     df_pred["Id"] = test["Id"]
     df_pred["Pawpularity"] = final_preds
-    df_pred.to_csv("{path}/submission.csv", index=False)
+    df_pred.to_csv(f"{path}/submission.csv", index=False)
 
 
 def main():
@@ -174,7 +173,7 @@ def main():
     seed_everything(config.seed)  # seed固定
 
     df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    # df = df.head(500) # for debug
+    df = df.head(100) # for debug
     df["Id"] = df["Id"].apply(lambda x: os.path.join(config.root, "train", x + ".jpg"))
 
     swint = train_swint(df)
@@ -191,3 +190,7 @@ def main():
 
     df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
     make_submission(df_test, prediction, ".")
+    print("done")
+
+if __name__ == "__main__":
+    main()

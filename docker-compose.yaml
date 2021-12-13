@@ -13,9 +13,10 @@ services:
       - "8080:8080"
     volumes:
       - ./notebooks:/notebooks
-      - /data:/input
+      - ./data:/kaggle/input
+      - ./src:/src
       - /usr/local/cuda:/usr/local/cuda
       - ~/.jupyter:/root/.jupyter
       - ~/.local/share/jupyter:/root/.local/share/jupyter
     working_dir: /
-
+    shm_size: '2gb'

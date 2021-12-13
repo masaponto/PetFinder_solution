@@ -1,10 +1,11 @@
 import torch
+import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from timm import create_model
 import pytorch_lightning as pl
-from preprocessing import get_default_transforms
+from src.preprocessing import get_default_transforms
 
 
 def mixup(x: torch.Tensor, y: torch.Tensor, alpha: float = 1.0):
