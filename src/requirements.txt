@@ -1,0 +1,4 @@
+python-box
+pytorch-lightning==1.4.0
+ttach
+timm

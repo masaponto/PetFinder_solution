@@ -12,9 +12,8 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./notebooks:/notebooks
       - ./data:/kaggle/input
-      - ./src:/src
+      - .:/works
       - /usr/local/cuda:/usr/local/cuda
       - ~/.jupyter:/root/.jupyter
       - ~/.local/share/jupyter:/root/.local/share/jupyter
