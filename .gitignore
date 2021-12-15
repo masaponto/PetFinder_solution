@@ -5,4 +5,5 @@
 .ipynb_checkpoints
 data/
 setup.py
+output.py
 __pycache__/
