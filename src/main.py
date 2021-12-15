@@ -7,6 +7,9 @@ from box import Box
 import numpy as np
 import pandas as pd
 
+# sklearn
+from sklearn.model_selection import StratifiedKFold
+
 # pytorch
 import torch
 import pytorch_lightning as pl
@@ -31,7 +34,8 @@ warnings.filterwarnings("ignore")
 config = {
     "seed": 2021,
     "root": "/kaggle/input/petfinder-pawpularity-score/",
-    "n_splits": 5,
+    #"n_splits": 5,
+    "n_splits": 2,
     "epoch": 20,
     "trainer": {
         "gpus": 1,
@@ -105,6 +109,46 @@ def train_swint(df):
 
     return model
 
+def train_swint_by_cv(df):
+    skf = StratifiedKFold(
+        n_splits=config.n_splits, shuffle=True, random_state=config.seed
+    )
+
+    models = []
+
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df["Id"], df["Pawpularity"])):
+        print(f"=====fold {fold}=======")
+
+        train_df = df.loc[train_idx].reset_index(drop=True)
+        val_df = df.loc[val_idx].reset_index(drop=True)
+        print(train_df.shape)
+        print(val_df.shape)
+        datamodule = PetfinderDataModule(train_df, val_df, config)
+        model = swint.Model(config)
+
+        earystopping = EarlyStopping(monitor="val_loss")
+        lr_monitor = callbacks.LearningRateMonitor()
+        loss_checkpoint = callbacks.ModelCheckpoint(
+            filename="best_loss",
+            monitor="val_loss",
+            save_top_k=1,
+            mode="min",
+            save_last=False,
+        )
+        logger = TensorBoardLogger(config.model.name)
+
+        trainer = pl.Trainer(
+            logger=logger,
+            max_epochs=config.epoch,
+            callbacks=[lr_monitor, loss_checkpoint, earystopping],
+            **config.trainer,
+        )
+        trainer.fit(model, datamodule=datamodule)
+
+    models.append(model)
+
+    return models
+
 
 def train_svr(df, embed):
     svr = SVR(C=config.svr.C)
@@ -173,23 +217,25 @@ def main():
     seed_everything(config.seed)  # seed固定
 
     df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    #df = df.head(100) # for debug
+    df = df.head(500) # for debug
     df["Id"] = df["Id"].apply(lambda x: os.path.join(config.root, "train", x + ".jpg"))
 
-    swint = train_swint(df)
+    train_swint_by_cv(df)
 
-    embed = make_swint_embed(df, swint)
-    svr = train_svr(df, embed)
+    # swint = train_swint(df)
 
-    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    df_test["Id"] = df_test["Id"].apply(
-        lambda x: os.path.join(config.root, "test", x + ".jpg")
-    )
+    # embed = make_swint_embed(df, swint)
+    # svr = train_svr(df, embed)
 
-    prediction = inference(df_test, swint, svr)
+    # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    # df_test["Id"] = df_test["Id"].apply(
+    #     lambda x: os.path.join(config.root, "test", x + ".jpg")
+    # )
 
-    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    make_submission(df_test, prediction, ".")
+    # prediction = inference(df_test, swint, svr)
+
+    # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    # make_submission(df_test, prediction, ".")
     print("done")
 
 if __name__ == "__main__":
