@@ -173,7 +173,7 @@ def main():
     seed_everything(config.seed)  # seed固定
 
     df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    df = df.head(100) # for debug
+    #df = df.head(100) # for debug
     df["Id"] = df["Id"].apply(lambda x: os.path.join(config.root, "train", x + ".jpg"))
 
     swint = train_swint(df)
