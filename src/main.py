@@ -9,6 +9,8 @@ import pandas as pd
 
 # sklearn
 from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
 
 # pytorch
 import torch
@@ -34,8 +36,8 @@ warnings.filterwarnings("ignore")
 config = {
     "seed": 2021,
     "root": "/kaggle/input/petfinder-pawpularity-score/",
-    #"n_splits": 5,
-    "n_splits": 2,
+    "n_splits": 5,
+    #"n_splits": 2,
     "epoch": 20,
     "trainer": {
         "gpus": 1,
@@ -75,7 +77,6 @@ config = Box(config)
 
 def train_swint(df):
     # train test split
-    from sklearn.model_selection import train_test_split
 
     train_df, val_df = train_test_split(
         df[["Id", "Pawpularity"]],
@@ -216,26 +217,60 @@ def main():
     torch.autograd.set_detect_anomaly(True)
     seed_everything(config.seed)  # seed固定
 
+
     df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    df = df.head(500) # for debug
+    #df = df.head(1000) # for debug
     df["Id"] = df["Id"].apply(lambda x: os.path.join(config.root, "train", x + ".jpg"))
 
-    train_swint_by_cv(df)
+    print("===split vaild===")
+    df, df_val = train_test_split(
+        df[["Id", "Pawpularity"]],
+        test_size=0.25,
+        random_state=config.seed,
+        shuffle=True,
+    )
+    df = df.reset_index(drop=True)
+    df_val = df_val.reset_index(drop=True)
 
-    # swint = train_swint(df)
 
-    # embed = make_swint_embed(df, swint)
-    # svr = train_svr(df, embed)
+    print("===train===")
+    swint_models = train_swint_by_cv(df)
+    svr_models = []
+    for model in swint_models:
+        emb = make_swint_embed(df, model)
+        svr = train_svr(df, emb)
+        svr_models.append(svr)
 
-    # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    # df_test["Id"] = df_test["Id"].apply(
-    #     lambda x: os.path.join(config.root, "test", x + ".jpg")
-    # )
 
-    # prediction = inference(df_test, swint, svr)
+    #swint = train_swint(df)
+    #embed = make_swint_embed(df, swint)
+    #svr = train_svr(df, embed)
+    # prediction = inference(df_val[["Id"]], swint, svr)
 
-    # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    # make_submission(df_test, prediction, ".")
+    print("===valid===")
+    prediction = np.zeros(len(df_val))
+    for n, (swint, svr) in enumerate(zip(swint_models, svr_models)):
+        # calc mean
+        prediction = (float(n) / (n+1)) * prediction + np.array(inference(df_val[["Id"]], swint, svr)) / (n+1)
+
+    rmse = np.sqrt(mean_squared_error(df_val["Pawpularity"], prediction))
+
+    print(f"RMSE: {rmse}")
+
+    print("===test===")
+    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    df_test["Id"] = df_test["Id"].apply(
+        lambda x: os.path.join(config.root, "test", x + ".jpg")
+    )
+
+    prediction = np.zeros(len(df_test))
+    print(df_test.head())
+    for n, (swint, svr) in enumerate(zip(swint_models, svr_models)):
+        # calc mean
+        prediction = (float(n) / (n+1)) * prediction + np.array(inference(df_test, swint, svr)) / (n+1)
+
+    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    make_submission(df_test, prediction, ".")
     print("done")
 
 if __name__ == "__main__":
