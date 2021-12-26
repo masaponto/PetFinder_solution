@@ -30,18 +30,19 @@ from cuml.svm import SVR
 
 from src.dataset import PetfinderDataModule
 
+
 warnings.filterwarnings("ignore")
 
 
 config = {
     "seed": 2021,
     "root": "/kaggle/input/petfinder-pawpularity-score/",
-    "n_splits": 5,
+    "n_splits": 10,
     #"n_splits": 2,
     "epoch": 20,
     "trainer": {
         "gpus": 1,
-        "accumulate_grad_batches": 1,
+        "accumulate_grad_batches": 4,
         "progress_bar_refresh_rate": 1,
         "fast_dev_run": False,
         "num_sanity_val_steps": 0,
@@ -49,20 +50,22 @@ config = {
     },
     "transform": {"name": "get_default_transforms", "image_size": 224},
     "train_loader": {
-        "batch_size": 64,
+        "batch_size": 8,
         "shuffle": True,
-        "num_workers": 2,
+        "num_workers": 1,
         "pin_memory": False,
         "drop_last": True,
     },
     "val_loader": {
-        "batch_size": 64,
+        "batch_size": 8,
         "shuffle": False,
-        "num_workers": 2,
+        "num_workers": 1,
         "pin_memory": False,
         "drop_last": False,
     },
-    "model": {"name": "swin_tiny_patch4_window7_224", "output_dim": 1},
+    #"model": {"name": "swin_tiny_patch4_window7_224", "output_dim": 1},
+    "model": {"name": "swin_large_patch4_window7_224_in22k", "output_dim": 1},
+    # https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/swin_transformer.py#L84
     "optimizer": {"name": "optim.AdamW", "params": {"lr": 1e-5},},
     "scheduler": {
         "name": "optim.lr_scheduler.CosineAnnealingWarmRestarts",
@@ -122,8 +125,6 @@ def train_swint_by_cv(df):
 
         train_df = df.loc[train_idx].reset_index(drop=True)
         val_df = df.loc[val_idx].reset_index(drop=True)
-        print(train_df.shape)
-        print(val_df.shape)
         datamodule = PetfinderDataModule(train_df, val_df, config)
         model = swint.Model(config)
 
@@ -141,6 +142,9 @@ def train_swint_by_cv(df):
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=config.epoch,
+            precision=16,
+            #amp_backend="native",
+            #amp_level="O2",
             callbacks=[lr_monitor, loss_checkpoint, earystopping],
             **config.trainer,
         )
@@ -216,7 +220,6 @@ def main():
 
     torch.autograd.set_detect_anomaly(True)
     seed_everything(config.seed)  # seed固定
-
 
     df = pd.read_csv(os.path.join(config.root, "train.csv"))
     #df = df.head(1000) # for debug
