@@ -52,14 +52,14 @@ config = {
     "train_loader": {
         "batch_size": 8,
         "shuffle": True,
-        "num_workers": 1,
+        "num_workers": 4,
         "pin_memory": False,
         "drop_last": True,
     },
     "val_loader": {
         "batch_size": 8,
         "shuffle": False,
-        "num_workers": 1,
+        "num_workers": 4,
         "pin_memory": False,
         "drop_last": False,
     },
@@ -142,7 +142,7 @@ def train_swint_by_cv(df):
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=config.epoch,
-            precision=16,
+            #precision=16,
             #amp_backend="native",
             #amp_level="O2",
             callbacks=[lr_monitor, loss_checkpoint, earystopping],
@@ -164,7 +164,7 @@ def train_svr(df, embed):
 
 def make_swint_embed(df, model):
     embed = []
-    config.train_loader.batch_size = 10
+    #config.train_loader.batch_size = 8
     config.train_loader.drop_last = False
     datamodule = PetfinderDataModule(df, None, config)
     for org_train_image, label in tqdm(datamodule.train_dataloader()):
@@ -181,7 +181,7 @@ def make_swint_embed(df, model):
 
 
 def inference(df_test, model, svr, w=0.2):
-    config.val_loader.batch_size = 10
+    #config.val_loader.batch_size = 8
     test_data_module = PetfinderDataModule(None, df_test, config)
     loader = test_data_module.val_dataloader()
 
