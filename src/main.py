@@ -192,7 +192,7 @@ def inference_swint_svr(df_test, model, svr, w=0.2):
 
     swint_preds = []
     svr_preds = []
-    for org_test_image in loader:
+    for org_test_image in tqdm(loader):
         images = model.transform["val"](org_test_image)
         images = images.to(model.device)
         logits = model.forward(images).squeeze(1)
@@ -231,6 +231,7 @@ def train_ensemble(df, model_path):
         swint_model = swint.Model.load_from_checkpoint(
             f"{model_path}/best_loss_fold_{fold}.ckpt", cfg=config
         )
+        swint_model.eval()
         swint_model.to("cuda:0")
         print(swint_model.device)
         embed = make_swint_embed(df, swint_model)
@@ -252,6 +253,34 @@ def inference_ensemble(df_test, model_path):
             f"{model_path}/best_loss_fold_{fold}.ckpt", cfg=config
         )
         svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
+        swint_model.eval()
+        swint_model.to("cuda:0")
+        print(swint_model.device)
+
+        # calc mean
+        prediction = (float(fold) / (fold + 1)) * prediction + np.array(
+            inference_swint_svr(df_test, swint_model, svr)
+        ) / (fold + 1)
+
+    return prediction
+
+
+def inference_ensemble_state_dict(df_test, model_path):
+
+    print("===test===")
+    df_test["Id"] = df_test["Id"].apply(
+        lambda x: os.path.join(config.root, "test", x + ".jpg")
+    )
+
+    prediction = np.zeros(len(df_test))
+
+    for fold in range(config.n_splits):
+        swint_model = swint.Model(config)
+        swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
+        svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
+        swint_model.eval()
+        swint_model.to("cuda:0")
+        print(swint_model.device)
 
         # calc mean
         prediction = (float(fold) / (fold + 1)) * prediction + np.array(
@@ -286,12 +315,17 @@ def main():
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # experiment(df, "test")
 
-    model_path = "model_submission"
-    df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    train_ensemble(df, model_path)
+    model_path = "model_submission_original"
+    # df = pd.read_csv(os.path.join(config.root, "train.csv"))
+    # train_ensemble(df, model_path)
 
     df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
     prediction = inference_ensemble(df_test, model_path)
+    print(prediction)
+
+    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    prediction = inference_ensemble_state_dict(df_test, "model_submission")
+
     make_submission(df_test, prediction, ".")
 
 
