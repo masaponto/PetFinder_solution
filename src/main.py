@@ -255,7 +255,6 @@ def inference_ensemble(df_test, model_path):
         svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
         swint_model.eval()
         swint_model.to("cuda:0")
-        print(swint_model.device)
 
         # calc mean
         prediction = (float(fold) / (fold + 1)) * prediction + np.array(
@@ -280,7 +279,6 @@ def inference_ensemble_state_dict(df_test, model_path):
         svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
         swint_model.eval()
         swint_model.to("cuda:0")
-        print(swint_model.device)
 
         # calc mean
         prediction = (float(fold) / (fold + 1)) * prediction + np.array(
