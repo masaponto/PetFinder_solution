@@ -171,6 +171,7 @@ def make_swint_embed(df, model):
     # config.train_loader.batch_size = 8
     config.train_loader.drop_last = False
     datamodule = PetfinderDataModule(df, None, config)
+    trainer = pl.Trainer(**config.trainer)
     for org_train_image, label in tqdm(datamodule.train_dataloader()):
         images = model.transform["val"](org_train_image)
         images = images.to(model.device)
@@ -223,14 +224,17 @@ def train_ensemble(df, model_path):
     df["Id"] = df["Id"].apply(lambda x: os.path.join(config.root, "train", x + ".jpg"))
 
     print("===train swint===")
-    train_swint_by_cv(df, model_path)
+    # train_swint_by_cv(df, model_path)
 
     print("===train svr===")
-    for fold in range(config.config.n_splits):
-        swint = swint.Model.load_from_checkpoint(
-            f"{model_path}/best_loss_fold_{fold}.ckpt"
+    for fold in range(config.n_splits):
+        swint_model = swint.Model.load_from_checkpoint(
+            f"{model_path}/best_loss_fold_{fold}.ckpt", cfg=config
         )
-        svr = train_svr(df, swint)
+        swint_model.to("cuda:0")
+        print(swint_model.device)
+        embed = make_swint_embed(df, swint_model)
+        svr = train_svr(df, embed)
         joblib.dump(svr, f"{model_path}/svr_{fold}.joblib")
 
 
@@ -244,14 +248,14 @@ def inference_ensemble(df_test, model_path):
     prediction = np.zeros(len(df_test))
 
     for fold in range(config.n_splits):
-        swint = swint.Model.load_from_checkpoint(
-            f"{model_path}/best_loss_fold_{fold}.ckpt"
+        swint_model = swint.Model.load_from_checkpoint(
+            f"{model_path}/best_loss_fold_{fold}.ckpt", cfg=config
         )
         svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
 
         # calc mean
         prediction = (float(fold) / (fold + 1)) * prediction + np.array(
-            inference_swint_svr(df_test, swint, svr)
+            inference_swint_svr(df_test, swint_model, svr)
         ) / (fold + 1)
 
     return prediction
