@@ -3,6 +3,7 @@
 .vscode
 .DS_Store
 .ipynb_checkpoints
+*.pyc
 data/
 setup.py
 output.py
