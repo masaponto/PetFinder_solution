@@ -166,20 +166,20 @@ def train_svr(df, embed):
     return svr
 
 
-def make_swint_embed(df, model):
+def make_swint_embed(df, model, mode):
+    assert mode in ("train", "val")
+
     embed = []
-    # config.train_loader.batch_size = 8
-    config.train_loader.drop_last = False
-    datamodule = PetfinderDataModule(df, None, config)
-    trainer = pl.Trainer(**config.trainer)
-    for org_train_image, label in tqdm(datamodule.train_dataloader()):
-        images = model.transform["val"](org_train_image)
+    datamodule = PetfinderDataModule(None, df.drop("Pawpularity", axis=1), config)
+    loader = datamodule.val_dataloader()
+
+    for org_train_image in tqdm(loader):
+
+        images = model.transform[mode](org_train_image)
         images = images.to(model.device)
         emb = model.backbone.forward(images).squeeze(1)
         emb = emb.detach().cpu().numpy()
         embed.append(emb)
-
-    config.train_loader.drop_last = True
 
     embed = np.concatenate(embed).astype("float32")
     return embed
@@ -202,7 +202,7 @@ def inference_swint_svr(df_test, model, svr, w=0.2):
         # for svr
         emb = model.backbone.forward(images).squeeze(1)
         emb = emb.detach().cpu().numpy()
-        pred = svr.predict(emb)
+        pred = svr.predict(emb.astype("float32"))
         svr_preds.extend(list(pred))
 
     final_preds = [
@@ -227,15 +227,27 @@ def train_ensemble(df, model_path):
     # train_swint_by_cv(df, model_path)
 
     print("===train svr===")
-    for fold in range(config.n_splits):
-        swint_model = swint.Model.load_from_checkpoint(
-            f"{model_path}/best_loss_fold_{fold}.ckpt", cfg=config
-        )
+    skf = StratifiedKFold(
+        n_splits=config.n_splits, shuffle=True, random_state=config.seed
+    )
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df["Id"], df["Pawpularity"])):
+        print(f"===fold: {fold}===")
+        # swint_model = swint.Model(config).load_from_checkpoint(
+        #    f"{model_path}/best_loss_{fold}.ckpt", cfg=config
+        # )
+        swint_model = swint.Model(config)
+        swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
         swint_model.eval()
         swint_model.to("cuda:0")
-        print(swint_model.device)
-        embed = make_swint_embed(df, swint_model)
-        svr = train_svr(df, embed)
+        train_df = df.loc[train_idx].reset_index(drop=True)
+        val_df = df.loc[val_idx].reset_index(drop=True)
+        embed = make_swint_embed(train_df, swint_model, "train")
+        svr = train_svr(train_df, embed)
+
+        val_embed = make_swint_embed(val_df, swint_model, "val")
+        pred = svr.predict(val_embed)
+        rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+        print(rmse)
         joblib.dump(svr, f"{model_path}/svr_{fold}.joblib")
 
 
@@ -306,6 +318,15 @@ def experiment(df, path):
     print(f"RMSE: {rmse}")
 
 
+def convert_ckpt_to_state_dict(model_path):
+    for fold in range(config.n_splits):
+        swint_model = swint.Model.load_from_checkpoint(
+            f"{model_path}/best_loss_fold_{fold}.ckpt",
+            cfg=config,
+        )
+        torch.save(swint_model.state_dict(), f"model_submission/best_loss_{fold}.pth")
+
+
 def main():
     torch.autograd.set_detect_anomaly(True)
     seed_everything(config.seed)  # seed固定
@@ -313,18 +334,19 @@ def main():
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # experiment(df, "test")
 
-    model_path = "model_submission_original"
+    # model_path = "model_submission_2"
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # train_ensemble(df, model_path)
 
+    # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    # prediction = inference_ensemble(df_test, model_path)
+    # print(prediction)
+
     df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    prediction = inference_ensemble(df_test, model_path)
+    prediction = inference_ensemble_state_dict(df_test, "model_submission_2")
     print(prediction)
 
-    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    prediction = inference_ensemble_state_dict(df_test, "model_submission")
-
-    make_submission(df_test, prediction, ".")
+    # make_submission(df_test, prediction, ".")
 
 
 if __name__ == "__main__":
