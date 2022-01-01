@@ -30,6 +30,10 @@ from src.models import swint
 import cuml
 from cuml.svm import SVR
 
+# LightGBM
+from lightgbm import LGBMRegressor
+
+# datamodule
 from src.dataset import PetfinderDataModule
 
 
@@ -80,6 +84,7 @@ config = {
     },
     "loss": "nn.BCEWithLogitsLoss",
     "svr": {"C": 20.0},
+    "lgbm": {},
 }
 
 config = Box(config)
@@ -152,8 +157,13 @@ def train_swint_by_cv(df, path):
             callbacks=[lr_monitor, loss_checkpoint, earystopping],
             **config.trainer,
         )
+
         trainer.fit(model, datamodule=datamodule)
-        trainer.validate(model, dataloaders=datamodule.val_dataloader())
+
+        model.eval()
+        val_out = trainer.validate(model, dataloaders=datamodule.val_dataloader())
+
+        print(val_out)
 
         del train_df, val_df, model
         gc.collect()
@@ -164,6 +174,19 @@ def train_svr(df, embed):
     svr.fit(embed.astype("float32"), df["Pawpularity"].astype("int32"))
 
     return svr
+
+
+def train_lightgbm(df, embed, df_val, embed_val):
+    lgbm = LGBMRegressor(random_state=config.seed, n_estimators=10000)
+    lgbm.fit(
+        embed.astype("float32"),
+        df["Pawpularity"].astype("int32"),
+        eval_metric="rmse",
+        eval_set=[(embed_val.astype("float32"), df_val["Pawpularity"].astype("int32"))],
+        early_stopping_rounds=10,
+    )
+
+    return lgbm
 
 
 def make_swint_embed(df, model, mode):
@@ -183,6 +206,25 @@ def make_swint_embed(df, model, mode):
 
     embed = np.concatenate(embed).astype("float32")
     return embed
+
+
+def inference(df_test, model):
+    test_data_module = PetfinderDataModule(
+        None, df_test.drop("Pawpularity", axis=1), config
+    )
+    loader = test_data_module.val_dataloader()
+
+    swint_preds = []
+    for org_test_image in tqdm(loader):
+        images = model.transform["val"](org_test_image)
+        images = images.to(model.device)
+        logits = model.forward(images).squeeze(1)
+        pred = logits.sigmoid().detach().cpu().numpy() * 100
+        swint_preds.extend(list(pred))
+
+    final_preds = swint_preds
+
+    return final_preds
 
 
 def inference_swint_svr(df_test, model, svr, w=0.2):
@@ -213,6 +255,45 @@ def inference_swint_svr(df_test, model, svr, w=0.2):
     return final_preds
 
 
+def inference_swint_svr_lgbm(df_test, model, svr, lgbm, w_svr=0.2, w_lgbm=0.2):
+    # config.val_loader.batch_size = 8
+    test_data_module = PetfinderDataModule(None, df_test, config)
+    loader = test_data_module.val_dataloader()
+
+    swint_preds = []
+    svr_preds = []
+    lgbm_preds = []
+
+    for org_test_image in tqdm(loader):
+        images = model.transform["val"](org_test_image)
+        images = images.to(model.device)
+        logits = model.forward(images).squeeze(1)
+        pred = logits.sigmoid().detach().cpu().numpy() * 100
+        swint_preds.extend(list(pred))
+
+        # for svr
+        emb = model.backbone.forward(images).squeeze(1)
+        emb = emb.detach().cpu().numpy()
+        svr_pred = svr.predict(emb.astype("float32"))
+        svr_preds.extend(list(svr_pred))
+
+        # for lgbm
+        lgbm_pred = lgbm.predict(emb.astype("float32"))
+
+        lgbm_preds.extend(list(lgbm_pred))
+
+    final_preds = [
+        ((1 - w_svr - w_lgbm) * swint_score)
+        + (w_svr * svr_score)
+        + (w_lgbm * lgbm_score)
+        for (swint_score, svr_score, lgbm_score) in zip(
+            swint_preds, svr_preds, lgbm_preds
+        )
+    ]
+
+    return final_preds
+
+
 def make_submission(test, final_preds, path):
     df_pred = pd.DataFrame()
     df_pred["Id"] = test["Id"]
@@ -226,7 +307,7 @@ def train_ensemble(df, model_path):
     print("===train swint===")
     # train_swint_by_cv(df, model_path)
 
-    print("===train svr===")
+    print("===train svr lgbm===")
     skf = StratifiedKFold(
         n_splits=config.n_splits, shuffle=True, random_state=config.seed
     )
@@ -241,14 +322,28 @@ def train_ensemble(df, model_path):
         swint_model.to("cuda:0")
         train_df = df.loc[train_idx].reset_index(drop=True)
         val_df = df.loc[val_idx].reset_index(drop=True)
-        embed = make_swint_embed(train_df, swint_model, "train")
-        svr = train_svr(train_df, embed)
 
+        # valid swint
+        # pred = inference(val_df, swint_model)
+        # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+        # print(rmse)
+
+        embed = make_swint_embed(train_df, swint_model, "train")
         val_embed = make_swint_embed(val_df, swint_model, "val")
+
+        # train svr
+        svr = train_svr(train_df, embed)
         pred = svr.predict(val_embed)
         rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
         print(rmse)
         joblib.dump(svr, f"{model_path}/svr_{fold}.joblib")
+
+        # train LightGBM
+        # lgbm = train_lightgbm(train_df, embed, val_df, val_embed)
+        # pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
+        # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+        # print(rmse)
+        # joblib.dump(lgbm, f"{model_path}/lgbm_{fold}.joblib")
 
 
 def inference_ensemble(df_test, model_path):
@@ -265,12 +360,14 @@ def inference_ensemble(df_test, model_path):
             f"{model_path}/best_loss_fold_{fold}.ckpt", cfg=config
         )
         svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
+        # lgbm = joblib.load(f"{model_path}/lgbm_{fold}.joblib")
         swint_model.eval()
         swint_model.to("cuda:0")
 
         # calc mean
         prediction = (float(fold) / (fold + 1)) * prediction + np.array(
-            inference_swint_svr(df_test, swint_model, svr)
+            # inference_swint_svr_lgbm(df_test, swint_model, svr, lgbm)
+            inference_swint_svr_lgbm(df_test, swint_model, svr)
         ) / (fold + 1)
 
     return prediction
@@ -289,11 +386,13 @@ def inference_ensemble_state_dict(df_test, model_path):
         swint_model = swint.Model(config)
         swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
         svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
+        # lgbm = joblib.load(f"{model_path}/lgbm_{fold}.joblib")
         swint_model.eval()
         swint_model.to("cuda:0")
 
         # calc mean
         prediction = (float(fold) / (fold + 1)) * prediction + np.array(
+            # inference_swint_svr_lgbm(df_test, swint_model, svr, lgbm)
             inference_swint_svr(df_test, swint_model, svr)
         ) / (fold + 1)
 
@@ -334,18 +433,17 @@ def main():
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # experiment(df, "test")
 
-    # model_path = "model_submission_2"
-    # df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    # train_ensemble(df, model_path)
+    model_path = "model_submission_2"
+    df = pd.read_csv(os.path.join(config.root, "train.csv"))
+    train_ensemble(df, model_path)
 
     # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
     # prediction = inference_ensemble(df_test, model_path)
     # print(prediction)
 
-    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    prediction = inference_ensemble_state_dict(df_test, "model_submission_2")
-    print(prediction)
-
+    # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    # prediction = inference_ensemble_state_dict(df_test.copy(), "model_submission_3")
+    # print(prediction)
     # make_submission(df_test, prediction, ".")
 
 
