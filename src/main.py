@@ -1,4 +1,5 @@
 import os
+from re import I
 import warnings
 from pprint import pprint
 from glob import glob
@@ -209,9 +210,10 @@ def make_swint_embed(df, model, mode):
 
 
 def inference(df_test, model):
-    test_data_module = PetfinderDataModule(
-        None, df_test.drop("Pawpularity", axis=1), config
-    )
+    if "Pawpularity" in df_test.columns:
+        df_test = df_test.drop("Pawpularity", axis=1)
+
+    test_data_module = PetfinderDataModule(None, df_test, config)
     loader = test_data_module.val_dataloader()
 
     swint_preds = []
@@ -316,6 +318,7 @@ def train_ensemble(df, model_path):
         # swint_model = swint.Model(config).load_from_checkpoint(
         #    f"{model_path}/best_loss_{fold}.ckpt", cfg=config
         # )
+
         swint_model = swint.Model(config)
         swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
         swint_model.eval()
@@ -332,18 +335,18 @@ def train_ensemble(df, model_path):
         val_embed = make_swint_embed(val_df, swint_model, "val")
 
         # train svr
-        svr = train_svr(train_df, embed)
-        pred = svr.predict(val_embed)
-        rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
-        print(rmse)
-        joblib.dump(svr, f"{model_path}/svr_{fold}.joblib")
-
-        # train LightGBM
-        # lgbm = train_lightgbm(train_df, embed, val_df, val_embed)
-        # pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
+        # svr = train_svr(train_df, embed)
+        # pred = svr.predict(val_embed)
         # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
         # print(rmse)
-        # joblib.dump(lgbm, f"{model_path}/lgbm_{fold}.joblib")
+        # joblib.dump(svr, f"{model_path}/svr_{fold}.joblib")
+
+        # train LightGBM
+        lgbm = train_lightgbm(train_df, embed, val_df, val_embed)
+        pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
+        rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+        print(rmse)
+        joblib.dump(lgbm, f"{model_path}/lgbm_{fold}.joblib")
 
 
 def inference_ensemble(df_test, model_path):
@@ -373,7 +376,7 @@ def inference_ensemble(df_test, model_path):
     return prediction
 
 
-def inference_ensemble_state_dict(df_test, model_path):
+def inference_ensemble_state_dict(df_test, model_path, mode):
 
     print("===test===")
     df_test["Id"] = df_test["Id"].apply(
@@ -381,20 +384,29 @@ def inference_ensemble_state_dict(df_test, model_path):
     )
 
     prediction = np.zeros(len(df_test))
-
+    print(f"=mode: {mode}=")
     for fold in range(config.n_splits):
         swint_model = swint.Model(config)
         swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
-        svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
-        # lgbm = joblib.load(f"{model_path}/lgbm_{fold}.joblib")
         swint_model.eval()
         swint_model.to("cuda:0")
 
+        if mode == "swint":
+            x = inference(df_test, swint_model)
+
+        elif mode == "swint_svr":
+            svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
+            x = inference_swint_svr(df_test, swint_model, svr)
+
+        elif mode == "swint_svr_lgbm":
+            svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
+            lgbm = joblib.load(f"{model_path}/lgbm_{fold}.joblib")
+            x = inference_swint_svr_lgbm(df_test, swint_model, svr, lgbm)
+        else:
+            raise Exception("invalid mode")
+
         # calc mean
-        prediction = (float(fold) / (fold + 1)) * prediction + np.array(
-            # inference_swint_svr_lgbm(df_test, swint_model, svr, lgbm)
-            inference_swint_svr(df_test, swint_model, svr)
-        ) / (fold + 1)
+        prediction = (float(fold) / (fold + 1)) * prediction + np.array(x) / (fold + 1)
 
     return prediction
 
@@ -426,6 +438,10 @@ def convert_ckpt_to_state_dict(model_path):
         torch.save(swint_model.state_dict(), f"model_submission/best_loss_{fold}.pth")
 
 
+def tune_lightgbm():
+    pass
+
+
 def main():
     torch.autograd.set_detect_anomaly(True)
     seed_everything(config.seed)  # seed固定
@@ -433,18 +449,20 @@ def main():
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # experiment(df, "test")
 
-    model_path = "model_submission_2"
-    df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    train_ensemble(df, model_path)
+    # model_path = "model_submission_2"
+    # df = pd.read_csv(os.path.join(config.root, "train.csv"))
+    # train_ensemble(df, model_path)
 
     # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
     # prediction = inference_ensemble(df_test, model_path)
     # print(prediction)
 
-    # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    # prediction = inference_ensemble_state_dict(df_test.copy(), "model_submission_3")
+    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    prediction = inference_ensemble_state_dict(
+        df_test.copy(), "model_submission_3", mode="swint"
+    )
     # print(prediction)
-    # make_submission(df_test, prediction, ".")
+    make_submission(df_test, prediction, ".")
 
 
 if __name__ == "__main__":
