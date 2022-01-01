@@ -91,29 +91,27 @@ config = {
 config = Box(config)
 
 
-def train_swint(df):
-    # train test split
-
-    train_df, val_df = train_test_split(
-        df[["Id", "Pawpularity"]],
-        test_size=0.25,
-        random_state=config.seed,
-        shuffle=True,
-    )
-    train_df = train_df.reset_index(drop=True)
-    val_df = val_df.reset_index(drop=True)
+def train_swint(
+    train_df,
+    val_df,
+    fold,
+    path,
+):
+    print(f"=====fold {fold}=======")
     datamodule = PetfinderDataModule(train_df, val_df, config)
     model = swint.Model(config)
+
     earystopping = EarlyStopping(monitor="val_loss")
     lr_monitor = callbacks.LearningRateMonitor()
     loss_checkpoint = callbacks.ModelCheckpoint(
-        filename="best_loss",
+        dirpath=path,
+        filename=f"best_loss_fold_{fold}",
         monitor="val_loss",
         save_top_k=1,
         mode="min",
         save_last=False,
     )
-    logger = TensorBoardLogger(config.model.name)
+    logger = TensorBoardLogger(path, name="lightning_logs", version=fold)
 
     trainer = pl.Trainer(
         logger=logger,
@@ -124,50 +122,10 @@ def train_swint(df):
 
     trainer.fit(model, datamodule=datamodule)
 
-    return model
+    model.eval()
+    val_out = trainer.validate(model, dataloaders=datamodule.val_dataloader())
 
-
-def train_swint_by_cv(df, path):
-    skf = StratifiedKFold(
-        n_splits=config.n_splits, shuffle=True, random_state=config.seed
-    )
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df["Id"], df["Pawpularity"])):
-        print(f"=====fold {fold}=======")
-
-        train_df = df.loc[train_idx].reset_index(drop=True)
-        val_df = df.loc[val_idx].reset_index(drop=True)
-
-        datamodule = PetfinderDataModule(train_df, val_df, config)
-        model = swint.Model(config)
-
-        earystopping = EarlyStopping(monitor="val_loss")
-        lr_monitor = callbacks.LearningRateMonitor()
-        loss_checkpoint = callbacks.ModelCheckpoint(
-            dirpath=path,
-            filename=f"best_loss_fold_{fold}",
-            monitor="val_loss",
-            save_top_k=1,
-            mode="min",
-            save_last=False,
-        )
-        logger = TensorBoardLogger(path, name="lightning_logs", version=fold)
-
-        trainer = pl.Trainer(
-            logger=logger,
-            max_epochs=config.epoch,
-            callbacks=[lr_monitor, loss_checkpoint, earystopping],
-            **config.trainer,
-        )
-
-        trainer.fit(model, datamodule=datamodule)
-
-        model.eval()
-        val_out = trainer.validate(model, dataloaders=datamodule.val_dataloader())
-
-        print(val_out)
-
-        del train_df, val_df, model
-        gc.collect()
+    print(val_out)
 
 
 def train_svr(df, embed):
@@ -190,12 +148,15 @@ def train_lightgbm(df, embed, df_val, embed_val):
     return lgbm
 
 
-def make_swint_embed(df, model, mode):
+def make_swint_embed(df, model, mode, fold, path=None):
     assert mode in ("train", "val")
 
     embed = []
     datamodule = PetfinderDataModule(None, df.drop("Pawpularity", axis=1), config)
     loader = datamodule.val_dataloader()
+
+    if path:
+        os.makedirs(path, exist_ok=True)
 
     for org_train_image in tqdm(loader):
 
@@ -206,6 +167,10 @@ def make_swint_embed(df, model, mode):
         embed.append(emb)
 
     embed = np.concatenate(embed).astype("float32")
+
+    if path:
+        np.save(f"{path}/swint_embed_{mode}_{fold}.npy", embed)
+
     return embed
 
 
@@ -306,33 +271,37 @@ def make_submission(test, final_preds, path):
 def train_ensemble(df, model_path):
     df["Id"] = df["Id"].apply(lambda x: os.path.join(config.root, "train", x + ".jpg"))
 
-    print("===train swint===")
-    # train_swint_by_cv(df, model_path)
-
     print("===train svr lgbm===")
+
     skf = StratifiedKFold(
         n_splits=config.n_splits, shuffle=True, random_state=config.seed
     )
+
     for fold, (train_idx, val_idx) in enumerate(skf.split(df["Id"], df["Pawpularity"])):
         print(f"===fold: {fold}===")
-        # swint_model = swint.Model(config).load_from_checkpoint(
-        #    f"{model_path}/best_loss_{fold}.ckpt", cfg=config
-        # )
+
+        train_df = df.loc[train_idx].reset_index(drop=True)
+        val_df = df.loc[val_idx].reset_index(drop=True)
+
+        # train_swint(train_df, val_df, fold, model_path)
+        # convert_ckpt_to_state_dict(model_path, model_path, fold)
 
         swint_model = swint.Model(config)
         swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
         swint_model.eval()
         swint_model.to("cuda:0")
-        train_df = df.loc[train_idx].reset_index(drop=True)
-        val_df = df.loc[val_idx].reset_index(drop=True)
 
         # valid swint
         # pred = inference(val_df, swint_model)
         # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
         # print(rmse)
 
-        embed = make_swint_embed(train_df, swint_model, "train")
-        val_embed = make_swint_embed(val_df, swint_model, "val")
+        embed = make_swint_embed(
+            train_df, swint_model, "train", fold, path="swint_embed"
+        )
+        val_embed = make_swint_embed(
+            val_df, swint_model, "val", fold, path="swint_embed"
+        )
 
         # train svr
         # svr = train_svr(train_df, embed)
@@ -342,38 +311,11 @@ def train_ensemble(df, model_path):
         # joblib.dump(svr, f"{model_path}/svr_{fold}.joblib")
 
         # train LightGBM
-        lgbm = train_lightgbm(train_df, embed, val_df, val_embed)
-        pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
-        rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
-        print(rmse)
-        joblib.dump(lgbm, f"{model_path}/lgbm_{fold}.joblib")
-
-
-def inference_ensemble(df_test, model_path):
-
-    print("===test===")
-    df_test["Id"] = df_test["Id"].apply(
-        lambda x: os.path.join(config.root, "test", x + ".jpg")
-    )
-
-    prediction = np.zeros(len(df_test))
-
-    for fold in range(config.n_splits):
-        swint_model = swint.Model.load_from_checkpoint(
-            f"{model_path}/best_loss_fold_{fold}.ckpt", cfg=config
-        )
-        svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
-        # lgbm = joblib.load(f"{model_path}/lgbm_{fold}.joblib")
-        swint_model.eval()
-        swint_model.to("cuda:0")
-
-        # calc mean
-        prediction = (float(fold) / (fold + 1)) * prediction + np.array(
-            # inference_swint_svr_lgbm(df_test, swint_model, svr, lgbm)
-            inference_swint_svr_lgbm(df_test, swint_model, svr)
-        ) / (fold + 1)
-
-    return prediction
+        # lgbm = train_lightgbm(train_df, embed, val_df, val_embed)
+        # pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
+        # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+        # print(rmse)
+        # joblib.dump(lgbm, f"{model_path}/lgbm_{fold}.joblib")
 
 
 def inference_ensemble_state_dict(df_test, model_path, mode):
@@ -411,35 +353,40 @@ def inference_ensemble_state_dict(df_test, model_path, mode):
     return prediction
 
 
-def experiment(df, path):
-    df["Id"] = df["Id"].apply(lambda x: os.path.join(config.root, "train", x + ".jpg"))
-    print("===split vaild===")
-    df, df_val = train_test_split(
-        df[["Id", "Pawpularity"]],
-        test_size=0.25,
-        random_state=config.seed,
-        shuffle=True,
+def convert_ckpt_to_state_dict(src_path, dst_path, fold):
+    swint_model = swint.Model.load_from_checkpoint(
+        f"{src_path}/best_loss_fold_{fold}.ckpt",
+        cfg=config,
     )
-    df = df.reset_index(drop=True)
-    df_val = df_val.reset_index(drop=True)
-
-    train_ensemble(df, path)
-    prediction = inference_ensemble(df_val, path)
-    rmse = np.sqrt(mean_squared_error(df_val["Pawpularity"], prediction))
-    print(f"RMSE: {rmse}")
+    torch.save(swint_model.state_dict(), f"{dst_path}/best_loss_{fold}.pth")
 
 
-def convert_ckpt_to_state_dict(model_path):
-    for fold in range(config.n_splits):
-        swint_model = swint.Model.load_from_checkpoint(
-            f"{model_path}/best_loss_fold_{fold}.ckpt",
-            cfg=config,
-        )
-        torch.save(swint_model.state_dict(), f"model_submission/best_loss_{fold}.pth")
+def tune_lightgbm(df, model_path, emb_path="swint_embed"):
+    skf = StratifiedKFold(
+        n_splits=config.n_splits, shuffle=True, random_state=config.seed
+    )
 
+    # TODO: add param tune code
 
-def tune_lightgbm():
-    pass
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df["Id"], df["Pawpularity"])):
+        print(f"===fold: {fold}===")
+
+        train_df = df.loc[train_idx].reset_index(drop=True)
+        val_df = df.loc[val_idx].reset_index(drop=True)
+
+        train_embed = np.load(f"{emb_path}/swint_embed_train_{fold}.npy")
+        val_embed = np.load(f"{emb_path}/swint_embed_val_{fold}.npy")
+
+        # lgbm = LGBMRegressor(random_state=config.seed, n_estimators=10000)
+        # lgbm.fit(
+        #     embed.astype("float32"),
+        #     df["Pawpularity"].astype("int32"),
+        #     eval_metric="rmse",
+        #     eval_set=[
+        #         (embed_val.astype("float32"), df_val["Pawpularity"].astype("int32"))
+        #     ],
+        #     early_stopping_rounds=10,
+        # )
 
 
 def main():
@@ -449,20 +396,20 @@ def main():
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # experiment(df, "test")
 
-    # model_path = "model_submission_2"
-    # df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    # train_ensemble(df, model_path)
+    model_path = "model_submission_3"
+    df = pd.read_csv(os.path.join(config.root, "train.csv"))
+    train_ensemble(df, model_path)
 
     # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
     # prediction = inference_ensemble(df_test, model_path)
     # print(prediction)
 
-    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    prediction = inference_ensemble_state_dict(
-        df_test.copy(), "model_submission_3", mode="swint"
-    )
+    # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    # prediction = inference_ensemble_state_dict(
+    #    df_test.copy(), "model_submission_3", mode="swint"
+    # )
     # print(prediction)
-    make_submission(df_test, prediction, ".")
+    # make_submission(df_test, prediction, ".")
 
 
 if __name__ == "__main__":
