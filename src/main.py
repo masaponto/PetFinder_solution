@@ -136,13 +136,25 @@ def train_svr(df, embed):
 
 
 def train_lightgbm(df, embed, df_val, embed_val):
+    # tuned by oputuna
+    params = {
+        "reg_alpha": 0.00021028343930250634,
+        "reg_lambda": 0.008156559010111118,
+        "num_leaves": 132,
+        "colsample_bytree": 0.3266158434999465,
+        "subsample": 0.8718341463395,
+        "subsample_freq": 4,
+        "min_child_samples": 87,
+    }
+
     lgbm = LGBMRegressor(random_state=config.seed, n_estimators=10000)
+    lgbm.set_params(**params)
     lgbm.fit(
         embed.astype("float32"),
         df["Pawpularity"].astype("int32"),
         eval_metric="rmse",
         eval_set=[(embed_val.astype("float32"), df_val["Pawpularity"].astype("int32"))],
-        early_stopping_rounds=10,
+        early_stopping_rounds=1000,
     )
 
     return lgbm
@@ -286,22 +298,22 @@ def train_ensemble(df, model_path):
         # train_swint(train_df, val_df, fold, model_path)
         # convert_ckpt_to_state_dict(model_path, model_path, fold)
 
-        swint_model = swint.Model(config)
-        swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
-        swint_model.eval()
-        swint_model.to("cuda:0")
+        # swint_model = swint.Model(config)
+        # swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
+        # swint_model.eval()
+        # swint_model.to("cuda:0")
 
         # valid swint
         # pred = inference(val_df, swint_model)
         # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
         # print(rmse)
 
-        embed = make_swint_embed(
-            train_df, swint_model, "train", fold, path="swint_embed"
-        )
-        val_embed = make_swint_embed(
-            val_df, swint_model, "val", fold, path="swint_embed"
-        )
+        # embed = make_swint_embed(
+        #     train_df, swint_model, "train", fold, path="swint_embed"
+        # )
+        # val_embed = make_swint_embed(
+        #     val_df, swint_model, "val", fold, path="swint_embed"
+        # )
 
         # train svr
         # svr = train_svr(train_df, embed)
@@ -310,12 +322,15 @@ def train_ensemble(df, model_path):
         # print(rmse)
         # joblib.dump(svr, f"{model_path}/svr_{fold}.joblib")
 
+        embed = np.load(f"swint_embed/swint_embed_train_{fold}.npy")
+        val_embed = np.load(f"swint_embed/swint_embed_val_{fold}.npy")
+
         # train LightGBM
-        # lgbm = train_lightgbm(train_df, embed, val_df, val_embed)
-        # pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
-        # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
-        # print(rmse)
-        # joblib.dump(lgbm, f"{model_path}/lgbm_{fold}.joblib")
+        lgbm = train_lightgbm(train_df, embed, val_df, val_embed)
+        pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
+        rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+        print(rmse)
+        joblib.dump(lgbm, f"{model_path}/lgbm_{fold}.joblib")
 
 
 def inference_ensemble_state_dict(df_test, model_path, mode):
@@ -361,32 +376,82 @@ def convert_ckpt_to_state_dict(src_path, dst_path, fold):
     torch.save(swint_model.state_dict(), f"{dst_path}/best_loss_{fold}.pth")
 
 
-def tune_lightgbm(df, model_path, emb_path="swint_embed"):
-    skf = StratifiedKFold(
-        n_splits=config.n_splits, shuffle=True, random_state=config.seed
-    )
-
+def tune_lightgbm(df, emb_path="swint_embed"):
+    print("lightgbm tune start")
     # TODO: add param tune code
+    import optuna
+    import time
 
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df["Id"], df["Pawpularity"])):
-        print(f"===fold: {fold}===")
+    start = time.time()
 
-        train_df = df.loc[train_idx].reset_index(drop=True)
-        val_df = df.loc[val_idx].reset_index(drop=True)
+    def bayes_objective(trial):
+        params = {
+            # "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 0.1, log=True),
+            # "reg_lambda": trial.suggest_float("reg_lambda", 0.0, 0.1, log=True),
+            "reg_alpha": trial.suggest_float("reg_alpha", 0.0001, 0.1, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 0.0001, 0.1, log=True),
+            "num_leaves": trial.suggest_int("num_leaves", 2, 200),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.1, 1.0),
+            "subsample": trial.suggest_float("subsample", 0.4, 1.0),
+            "subsample_freq": trial.suggest_int("subsample_freq", 0, 7),
+            "min_child_samples": trial.suggest_int("min_child_samples", 0, 100),
+        }
+        # モデルにパラメータ適用
+        lgbm = LGBMRegressor(random_state=config.seed, n_estimators=10000)
+        lgbm.set_params(**params)
 
-        train_embed = np.load(f"{emb_path}/swint_embed_train_{fold}.npy")
-        val_embed = np.load(f"{emb_path}/swint_embed_val_{fold}.npy")
+        # cross_val_scoreでクロスバリデーション
+        skf = StratifiedKFold(
+            n_splits=config.n_splits, shuffle=True, random_state=config.seed
+        )
 
-        # lgbm = LGBMRegressor(random_state=config.seed, n_estimators=10000)
-        # lgbm.fit(
-        #     embed.astype("float32"),
-        #     df["Pawpularity"].astype("int32"),
-        #     eval_metric="rmse",
-        #     eval_set=[
-        #         (embed_val.astype("float32"), df_val["Pawpularity"].astype("int32"))
-        #     ],
-        #     early_stopping_rounds=10,
-        # )
+        rmse_list = []
+        for fold, (train_idx, val_idx) in enumerate(
+            skf.split(df["Id"], df["Pawpularity"])
+        ):
+            train_df = df.loc[train_idx].reset_index(drop=True)
+            val_df = df.loc[val_idx].reset_index(drop=True)
+
+            train_embed = np.load(f"{emb_path}/swint_embed_train_{fold}.npy")
+            val_embed = np.load(f"{emb_path}/swint_embed_val_{fold}.npy")
+
+            lgbm.fit(
+                train_embed.astype("float32"),
+                train_df["Pawpularity"].astype("int32"),
+                eval_metric="rmse",
+                eval_set=[
+                    (val_embed.astype("float32"), val_df["Pawpularity"].astype("int32"))
+                ],
+                early_stopping_rounds=10,
+            )
+
+            pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
+            rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+            rmse_list.append(rmse)
+
+        rmse = np.mean(rmse_list)
+
+        return rmse
+
+    study = optuna.create_study(
+        direction="minimize", sampler=optuna.samplers.TPESampler(seed=config.seed)
+    )
+    study.optimize(bayes_objective, n_trials=100, n_jobs=-1)
+
+    best_params = study.best_trial.params
+    best_score = study.best_trial.value
+    print(f"最適パラメータ {best_params}\nスコア {best_score}")
+    print(f"所要時間{time.time() - start}秒")
+
+    # trial 8
+    # {'reg_alpha': 0.08119805342335897, 'reg_lambda': 0.05173352164757917, 'num_leaves': 170, 'colsample_bytree': 0.6325844744041931, 'subsample': 0.5336184209382349, 'subsample_freq': 0, 'min_child_samples': 74}
+    # スコア 17.835622159304837
+    # 所要時間3706.5731043815613秒
+
+    # trial 100
+    # 最適パラメータ {'reg_alpha': 0.00021028343930250634, 'reg_lambda': 0.008156559010111118, 'num_leaves': 132, 'colsample_bytree': 0.3266158434999465, 'subsample': 0.8718341463395, 'subsample_freq': 4, 'min_child_samples': 87}
+    # スコア 17.75303574840021
+    # 所要時間2885.906862974167秒
 
 
 def main():
@@ -399,6 +464,7 @@ def main():
     model_path = "model_submission_3"
     df = pd.read_csv(os.path.join(config.root, "train.csv"))
     train_ensemble(df, model_path)
+    # tune_lightgbm(df)
 
     # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
     # prediction = inference_ensemble(df_test, model_path)
