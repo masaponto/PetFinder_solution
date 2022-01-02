@@ -16,6 +16,7 @@ import time
 from sklearn.model_selection import StratifiedKFold
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
+from copy import deepcopy
 
 # pytorch
 import torch
@@ -140,13 +141,13 @@ def train_svr(df, embed):
 def train_lightgbm(df, embed, df_val, embed_val):
     # tuned by oputuna
     params = {
-        "reg_alpha": 0.00021028343930250634,
-        "reg_lambda": 0.008156559010111118,
-        "num_leaves": 132,
-        "colsample_bytree": 0.3266158434999465,
-        "subsample": 0.8718341463395,
-        "subsample_freq": 4,
-        "min_child_samples": 87,
+        "reg_alpha": 0.006013503575632864,
+        "reg_lambda": 0.004075989478302265,
+        "num_leaves": 16,
+        "colsample_bytree": 0.5064800798900133,
+        "subsample": 0.7871572722868186,
+        "subsample_freq": 1,
+        "min_child_samples": 93,
     }
 
     lgbm = LGBMRegressor(random_state=config.seed, n_estimators=10000)
@@ -395,8 +396,8 @@ def tune_lightgbm(df, emb_path="swint_embed"):
             "min_child_samples": trial.suggest_int("min_child_samples", 0, 100),
         }
         # モデルにパラメータ適用
-        lgbm = LGBMRegressor(random_state=config.seed, n_estimators=10000)
-        lgbm.set_params(**params)
+        model = LGBMRegressor(random_state=config.seed, n_estimators=10000)
+        model.set_params(**params)
 
         # cross_val_scoreでクロスバリデーション
         skf = StratifiedKFold(
@@ -407,6 +408,7 @@ def tune_lightgbm(df, emb_path="swint_embed"):
         for fold, (train_idx, val_idx) in enumerate(
             skf.split(df["Id"], df["Pawpularity"])
         ):
+            lgbm = deepcopy(model)
             train_df = df.loc[train_idx].reset_index(drop=True)
             val_df = df.loc[val_idx].reset_index(drop=True)
 
@@ -451,6 +453,11 @@ def tune_lightgbm(df, emb_path="swint_embed"):
     # スコア 17.75303574840021
     # 所要時間2885.906862974167秒
 
+    # fig bug
+    # {'reg_alpha': 0.006013503575632864, 'reg_lambda': 0.004075989478302265, 'num_leaves': 16, 'colsample_bytree': 0.5064800798900133, 'subsample': 0.7871572722868186, 'subsample_freq': 1, 'min_child_samples': 93}
+    # スコア 17.728024045874047
+    # 所要時間5492.3369576931秒
+
 
 def tune_svr(df, emb_path="swint_embed"):
     # TODO Add SVR param tune
@@ -465,7 +472,7 @@ def tune_svr(df, emb_path="swint_embed"):
             "epsilon": trial.suggest_loguniform("epsilon", 1e-5, 1e5),
         }
         # モデルにパラメータ適用
-        svr = SVR(**params)
+        model = SVR(**params)
 
         # cross_val_scoreでクロスバリデーション
         skf = StratifiedKFold(
@@ -476,6 +483,9 @@ def tune_svr(df, emb_path="swint_embed"):
         for fold, (train_idx, val_idx) in enumerate(
             skf.split(df["Id"], df["Pawpularity"])
         ):
+
+            svr = deepcopy(model)
+
             train_df = df.loc[train_idx].reset_index(drop=True)
             val_df = df.loc[val_idx].reset_index(drop=True)
 
@@ -498,7 +508,7 @@ def tune_svr(df, emb_path="swint_embed"):
     study = optuna.create_study(
         direction="minimize", sampler=optuna.samplers.TPESampler(seed=config.seed)
     )
-    study.optimize(bayes_objective, n_trials=100, n_jobs=-1)
+    study.optimize(bayes_objective, n_trials=100, n_jobs=1)
 
     best_params = study.best_trial.params
     best_score = study.best_trial.value
