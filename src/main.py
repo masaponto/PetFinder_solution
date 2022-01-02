@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import joblib
 import gc
+import optuna
+import time
 
 # sklearn
 from sklearn.model_selection import StratifiedKFold
@@ -378,10 +380,6 @@ def convert_ckpt_to_state_dict(src_path, dst_path, fold):
 
 def tune_lightgbm(df, emb_path="swint_embed"):
     print("lightgbm tune start")
-    # TODO: add param tune code
-    import optuna
-    import time
-
     start = time.time()
 
     def bayes_objective(trial):
@@ -454,6 +452,60 @@ def tune_lightgbm(df, emb_path="swint_embed"):
     # 所要時間2885.906862974167秒
 
 
+def tune_svr(df, emb_path="swint_embed"):
+    # TODO Add SVR param tune
+    print("svr tune start")
+    start = time.time()
+
+    def bayes_objective(trial):
+
+        params = {
+            "gamma": trial.suggest_loguniform("gamma", 1e-5, 1e5),
+            "C": trial.suggest_loguniform("C", 1e-5, 1e5),
+            "epsilon": trial.suggest_loguniform("epsilon", 1e-5, 1e5),
+        }
+        # モデルにパラメータ適用
+        svr = SVR(**params)
+
+        # cross_val_scoreでクロスバリデーション
+        skf = StratifiedKFold(
+            n_splits=config.n_splits, shuffle=True, random_state=config.seed
+        )
+
+        rmse_list = []
+        for fold, (train_idx, val_idx) in enumerate(
+            skf.split(df["Id"], df["Pawpularity"])
+        ):
+            train_df = df.loc[train_idx].reset_index(drop=True)
+            val_df = df.loc[val_idx].reset_index(drop=True)
+
+            train_embed = np.load(f"{emb_path}/swint_embed_train_{fold}.npy")
+            val_embed = np.load(f"{emb_path}/swint_embed_val_{fold}.npy")
+
+            svr.fit(
+                train_embed.astype("float32"),
+                train_df["Pawpularity"].astype("int32"),
+            )
+
+            pred = svr.predict(val_embed)
+            rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+            rmse_list.append(rmse)
+
+        rmse = np.mean(rmse_list)
+
+        return rmse
+
+    study = optuna.create_study(
+        direction="minimize", sampler=optuna.samplers.TPESampler(seed=config.seed)
+    )
+    study.optimize(bayes_objective, n_trials=100, n_jobs=-1)
+
+    best_params = study.best_trial.params
+    best_score = study.best_trial.value
+    print(f"最適パラメータ {best_params}\nスコア {best_score}")
+    print(f"所要時間{time.time() - start}秒")
+
+
 def main():
     torch.autograd.set_detect_anomaly(True)
     seed_everything(config.seed)  # seed固定
@@ -461,10 +513,11 @@ def main():
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # experiment(df, "test")
 
-    model_path = "model_submission_3"
+    model_path = "model_submission_4"
     df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    train_ensemble(df, model_path)
+    # train_ensemble(df, model_path)
     # tune_lightgbm(df)
+    tune_svr(df)
 
     # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
     # prediction = inference_ensemble(df_test, model_path)
