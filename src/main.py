@@ -87,7 +87,7 @@ config = {
         },
     },
     "loss": "nn.BCEWithLogitsLoss",
-    "svr": {"C": 20.0},
+    "svr": {},
     "lgbm": {},
 }
 
@@ -132,7 +132,15 @@ def train_swint(
 
 
 def train_svr(df, embed):
-    svr = SVR(C=config.svr.C)
+    params = {
+        "gamma": 0.006550458887347427,
+        "C": 5.7273276958907715,
+        "epsilon": 6.834062667406395,
+    }
+    # スコア 17.68122135877512
+    # 所要時間465.755384683609秒
+
+    svr = SVR(**params)
     svr.fit(embed.astype("float32"), df["Pawpularity"].astype("int32"))
 
     return svr
@@ -238,6 +246,9 @@ def inference_swint_svr(df_test, model, svr, w=0.2):
 
 
 def inference_swint_svr_lgbm(df_test, model, svr, lgbm, w_svr=0.2, w_lgbm=0.2):
+
+    assert 1 > (w_svr + w_lgbm) >= 0
+
     # config.val_loader.batch_size = 8
     test_data_module = PetfinderDataModule(None, df_test, config)
     loader = test_data_module.val_dataloader()
@@ -291,6 +302,8 @@ def train_ensemble(df, model_path):
     skf = StratifiedKFold(
         n_splits=config.n_splits, shuffle=True, random_state=config.seed
     )
+    lgbm_rmse_list = []
+    svr_rmse_list = []
 
     for fold, (train_idx, val_idx) in enumerate(skf.split(df["Id"], df["Pawpularity"])):
         print(f"===fold: {fold}===")
@@ -318,22 +331,36 @@ def train_ensemble(df, model_path):
         #     val_df, swint_model, "val", fold, path="swint_embed"
         # )
 
-        # train svr
-        # svr = train_svr(train_df, embed)
-        # pred = svr.predict(val_embed)
-        # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
-        # print(rmse)
-        # joblib.dump(svr, f"{model_path}/svr_{fold}.joblib")
-
         embed = np.load(f"swint_embed/swint_embed_train_{fold}.npy")
         val_embed = np.load(f"swint_embed/swint_embed_val_{fold}.npy")
+
+        # train svr
+        svr = train_svr(train_df, embed)
+        pred = svr.predict(val_embed)
+        rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+        print("svr", rmse)
+        joblib.dump(svr, f"{model_path}/svr_{fold}.joblib")
+
+        svr_rmse_list.append(rmse)
 
         # train LightGBM
         lgbm = train_lightgbm(train_df, embed, val_df, val_embed)
         pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
         rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
-        print(rmse)
+        print("lgbm", rmse)
         joblib.dump(lgbm, f"{model_path}/lgbm_{fold}.joblib")
+
+        lgbm_rmse_list.append(rmse)
+
+    print("=== svr rmse ===")
+    for rmse in svr_rmse_list:
+        print(rmse)
+    print("mean:", np.mean(svr_rmse_list))
+
+    print("=== lightgbm rmse ===")
+    for rmse in lgbm_rmse_list:
+        print(rmse)
+    print("mean:", np.mean(lgbm_rmse_list))
 
 
 def inference_ensemble_state_dict(df_test, model_path, mode):
@@ -515,6 +542,10 @@ def tune_svr(df, emb_path="swint_embed"):
     print(f"最適パラメータ {best_params}\nスコア {best_score}")
     print(f"所要時間{time.time() - start}秒")
 
+    # {"gamma": 0.006550458887347427,"C": 5.7273276958907715,"epsilon": 6.834062667406395,}
+    # スコア 17.68122135877512
+    # 所要時間465.755384683609秒
+
 
 def main():
     torch.autograd.set_detect_anomaly(True)
@@ -523,11 +554,11 @@ def main():
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # experiment(df, "test")
 
-    model_path = "model_submission_4"
+    model_path = "model_submission_5"
     df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    # train_ensemble(df, model_path)
+    train_ensemble(df, model_path)
     # tune_lightgbm(df)
-    tune_svr(df)
+    # tune_svr(df)
 
     # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
     # prediction = inference_ensemble(df_test, model_path)
