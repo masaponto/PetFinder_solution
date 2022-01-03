@@ -363,7 +363,7 @@ def train_ensemble(df, model_path):
     print("mean:", np.mean(lgbm_rmse_list))
 
 
-def inference_ensemble_state_dict(df_test, model_path, mode):
+def inference_ensemble_state_dict(df_test, model_path, mode, w_svr=0.2, w_lgbm=0.2):
 
     print("===test===")
     df_test["Id"] = df_test["Id"].apply(
@@ -388,7 +388,9 @@ def inference_ensemble_state_dict(df_test, model_path, mode):
         elif mode == "swint_svr_lgbm":
             svr = joblib.load(f"{model_path}/svr_{fold}.joblib")
             lgbm = joblib.load(f"{model_path}/lgbm_{fold}.joblib")
-            x = inference_swint_svr_lgbm(df_test, swint_model, svr, lgbm)
+            x = inference_swint_svr_lgbm(
+                df_test, swint_model, svr, lgbm, w_svr=w_svr, w_lgbm=w_lgbm
+            )
         else:
             raise Exception("invalid mode")
 
@@ -555,8 +557,8 @@ def main():
     # experiment(df, "test")
 
     model_path = "model_submission_5"
-    df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    train_ensemble(df, model_path)
+    # df = pd.read_csv(os.path.join(config.root, "train.csv"))
+    # train_ensemble(df, model_path)
     # tune_lightgbm(df)
     # tune_svr(df)
 
@@ -564,12 +566,16 @@ def main():
     # prediction = inference_ensemble(df_test, model_path)
     # print(prediction)
 
-    # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    # prediction = inference_ensemble_state_dict(
-    #    df_test.copy(), "model_submission_3", mode="swint"
-    # )
-    # print(prediction)
-    # make_submission(df_test, prediction, ".")
+    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    prediction = inference_ensemble_state_dict(
+        df_test.copy(),
+        "model_submission_5",
+        mode="swint_svr_lgbm",
+        w_lgbm=0.3,
+        w_svr=0.3,
+    )
+    print(prediction)
+    make_submission(df_test, prediction, ".")
 
 
 if __name__ == "__main__":
