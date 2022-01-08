@@ -47,6 +47,7 @@ warnings.filterwarnings("ignore")
 config = {
     "seed": 2021,
     "root": "/kaggle/input/petfinder-pawpularity-score/",
+    "crop_data_path": "/kaggle/input/crop/",
     "n_splits": 10,
     "epoch": 20,
     "trainer": {
@@ -72,7 +73,7 @@ config = {
         "pin_memory": False,
         "drop_last": False,
     },
-    # "model": {"name": "swin_tiny_patch4_window7_224", "output_dim": 1},
+    # "model_tiny": {"name": "swin_tiny_patch4_window7_224", "output_dim": 1},
     "model": {"name": "swin_large_patch4_window7_224_in22k", "output_dim": 1},
     # https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/swin_transformer.py#L84
     "optimizer": {
@@ -132,13 +133,15 @@ def train_swint(
 
 
 def train_svr(df, embed):
-    params = {
-        "gamma": 0.006550458887347427,
-        "C": 5.7273276958907715,
-        "epsilon": 6.834062667406395,
-    }
+    # params = {
+    #     "gamma": 0.006550458887347427,
+    #     "C": 5.7273276958907715,
+    #     "epsilon": 6.834062667406395,
+    # }
     # スコア 17.68122135877512
     # 所要時間465.755384683609秒
+
+    params = {"C": 20}
 
     svr = SVR(**params)
     svr.fit(embed.astype("float32"), df["Pawpularity"].astype("int32"))
@@ -148,15 +151,17 @@ def train_svr(df, embed):
 
 def train_lightgbm(df, embed, df_val, embed_val):
     # tuned by oputuna
-    params = {
-        "reg_alpha": 0.006013503575632864,
-        "reg_lambda": 0.004075989478302265,
-        "num_leaves": 16,
-        "colsample_bytree": 0.5064800798900133,
-        "subsample": 0.7871572722868186,
-        "subsample_freq": 1,
-        "min_child_samples": 93,
-    }
+    # params = {
+    #     "reg_alpha": 0.006013503575632864,
+    #     "reg_lambda": 0.004075989478302265,
+    #     "num_leaves": 16,
+    #     "colsample_bytree": 0.5064800798900133,
+    #     "subsample": 0.7871572722868186,
+    #     "subsample_freq": 1,
+    #     "min_child_samples": 93,
+    # }
+
+    params = {}
 
     lgbm = LGBMRegressor(random_state=config.seed, n_estimators=10000)
     lgbm.set_params(**params)
@@ -295,7 +300,17 @@ def make_submission(test, final_preds, path):
 
 
 def train_ensemble(df, model_path):
+    print("original data shape", df.shape)
+    # df_crop = df.copy()
     df["Id"] = df["Id"].apply(lambda x: os.path.join(config.root, "train", x + ".jpg"))
+
+    # df_crop["Id"] = df_crop["Id"].apply(
+    #     lambda x: os.path.join(config.crop_data_path, x + ".jpg")
+    # )
+
+    # df = pd.concat([df, df_crop]).reset_index(drop=True)
+
+    # print("Add data shape", df.shape)
 
     print("===train svr lgbm===")
 
@@ -304,6 +319,7 @@ def train_ensemble(df, model_path):
     )
     lgbm_rmse_list = []
     svr_rmse_list = []
+    swint_rmse_list = []
 
     for fold, (train_idx, val_idx) in enumerate(skf.split(df["Id"], df["Pawpularity"])):
         print(f"===fold: {fold}===")
@@ -311,28 +327,29 @@ def train_ensemble(df, model_path):
         train_df = df.loc[train_idx].reset_index(drop=True)
         val_df = df.loc[val_idx].reset_index(drop=True)
 
-        # train_swint(train_df, val_df, fold, model_path)
-        # convert_ckpt_to_state_dict(model_path, model_path, fold)
+        train_swint(train_df, val_df, fold, "model_original2")
+        convert_ckpt_to_state_dict("model_original2", model_path, fold)
 
-        # swint_model = swint.Model(config)
-        # swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
-        # swint_model.eval()
-        # swint_model.to("cuda:0")
+        swint_model = swint.Model(config)
+        swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
+        swint_model.eval()
+        swint_model.to("cuda:0")
 
         # valid swint
-        # pred = inference(val_df, swint_model)
-        # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
-        # print(rmse)
+        pred = inference(val_df, swint_model)
+        rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+        print("swint", rmse)
+        swint_rmse_list.append(rmse)
 
-        # embed = make_swint_embed(
-        #     train_df, swint_model, "train", fold, path="swint_embed"
-        # )
-        # val_embed = make_swint_embed(
-        #     val_df, swint_model, "val", fold, path="swint_embed"
-        # )
+        embed = make_swint_embed(
+            train_df, swint_model, "train", fold, path="swint_embed_2"
+        )
+        val_embed = make_swint_embed(
+            val_df, swint_model, "val", fold, path="swint_embed_2"
+        )
 
-        embed = np.load(f"swint_embed/swint_embed_train_{fold}.npy")
-        val_embed = np.load(f"swint_embed/swint_embed_val_{fold}.npy")
+        # embed = np.load(f"swint_embed/swint_embed_train_{fold}.npy")
+        # val_embed = np.load(f"swint_embed/swint_embed_val_{fold}.npy")
 
         # train svr
         svr = train_svr(train_df, embed)
@@ -344,23 +361,23 @@ def train_ensemble(df, model_path):
         svr_rmse_list.append(rmse)
 
         # train LightGBM
-        lgbm = train_lightgbm(train_df, embed, val_df, val_embed)
-        pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
-        rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
-        print("lgbm", rmse)
-        joblib.dump(lgbm, f"{model_path}/lgbm_{fold}.joblib")
+        # lgbm = train_lightgbm(train_df, embed, val_df, val_embed)
+        # pred = lgbm.predict(val_embed, num_iteration=lgbm.best_iteration_)
+        # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+        # print("lgbm", rmse)
+        # joblib.dump(lgbm, f"{model_path}/lgbm_{fold}.joblib")
 
-        lgbm_rmse_list.append(rmse)
+        # lgbm_rmse_list.append(rmse)
 
     print("=== svr rmse ===")
     for rmse in svr_rmse_list:
         print(rmse)
     print("mean:", np.mean(svr_rmse_list))
 
-    print("=== lightgbm rmse ===")
-    for rmse in lgbm_rmse_list:
-        print(rmse)
-    print("mean:", np.mean(lgbm_rmse_list))
+    # print("=== lightgbm rmse ===")
+    # for rmse in lgbm_rmse_list:
+    #    print(rmse)
+    # print("mean:", np.mean(lgbm_rmse_list))
 
 
 def inference_ensemble_state_dict(df_test, model_path, mode, w_svr=0.2, w_lgbm=0.2):
@@ -556,7 +573,7 @@ def main():
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # experiment(df, "test")
 
-    model_path = "model_submission_5"
+    model_path = "model_submission_6"
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # train_ensemble(df, model_path)
     # tune_lightgbm(df)
@@ -569,13 +586,11 @@ def main():
     df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
     prediction = inference_ensemble_state_dict(
         df_test.copy(),
-        "model_submission_5",
-        mode="swint_svr_lgbm",
-        w_lgbm=0.3,
-        w_svr=0.3,
+        "model_submission_6",
+        mode="swint_svr",
     )
     print(prediction)
-    make_submission(df_test, prediction, ".")
+    # make_submission(df_test, prediction, ".")
 
 
 if __name__ == "__main__":
