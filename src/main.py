@@ -49,32 +49,38 @@ config = {
     "root": "/kaggle/input/petfinder-pawpularity-score/",
     "crop_data_path": "/kaggle/input/crop/",
     "n_splits": 10,
-    "epoch": 20,
+    # "epoch": 20,
+    "epoch": 5,
     "trainer": {
         "gpus": 1,
-        "accumulate_grad_batches": 4,
+        # "accumulate_grad_batches": 4,
+        "accumulate_grad_batches": 8,
         "progress_bar_refresh_rate": 1,
         "fast_dev_run": False,
         "num_sanity_val_steps": 0,
         "resume_from_checkpoint": None,
     },
-    "transform": {"name": "get_default_transforms", "image_size": 224},
+    # "transform": {"name": "get_default_transforms", "image_size": 224},
+    "transform": {"name": "get_default_transforms", "image_size": 384},
     "train_loader": {
-        "batch_size": 8,
+        # "batch_size": 8,
+        "batch_size": 4,
         "shuffle": True,
         "num_workers": 2,
         "pin_memory": False,
         "drop_last": True,
     },
     "val_loader": {
-        "batch_size": 8,
+        # "batch_size": 8,
+        "batch_size": 4,
         "shuffle": False,
         "num_workers": 2,
         "pin_memory": False,
         "drop_last": False,
     },
     # "model_tiny": {"name": "swin_tiny_patch4_window7_224", "output_dim": 1},
-    "model": {"name": "swin_large_patch4_window7_224_in22k", "output_dim": 1},
+    # "model": {"name": "swin_large_patch4_window7_224_in22k", "output_dim": 1},
+    "model": {"name": "swin_large_patch4_window12_384_in22k", "output_dim": 1},
     # https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/swin_transformer.py#L84
     "optimizer": {
         "name": "optim.AdamW",
@@ -322,34 +328,37 @@ def train_ensemble(df, model_path):
     swint_rmse_list = []
 
     for fold, (train_idx, val_idx) in enumerate(skf.split(df["Id"], df["Pawpularity"])):
+        if fold != 0:
+            continue
+
         print(f"===fold: {fold}===")
 
         train_df = df.loc[train_idx].reset_index(drop=True)
         val_df = df.loc[val_idx].reset_index(drop=True)
 
-        train_swint(train_df, val_df, fold, "model_original2")
-        convert_ckpt_to_state_dict("model_original2", model_path, fold)
+        # train_swint(train_df, val_df, fold, "model_original3")
+        # convert_ckpt_to_state_dict("model_original3", model_path, fold)
 
-        swint_model = swint.Model(config)
-        swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
-        swint_model.eval()
-        swint_model.to("cuda:0")
+        # swint_model = swint.Model(config)
+        # swint_model.load_state_dict(torch.load(f"{model_path}/best_loss_{fold}.pth"))
+        # swint_model.eval()
+        # swint_model.to("cuda:0")
 
         # valid swint
-        pred = inference(val_df, swint_model)
-        rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
-        print("swint", rmse)
-        swint_rmse_list.append(rmse)
+        # pred = inference(val_df, swint_model)
+        # rmse = np.sqrt(mean_squared_error(val_df["Pawpularity"], pred))
+        # print("swint", rmse)
+        # swint_rmse_list.append(rmse)
 
-        embed = make_swint_embed(
-            train_df, swint_model, "train", fold, path="swint_embed_2"
-        )
-        val_embed = make_swint_embed(
-            val_df, swint_model, "val", fold, path="swint_embed_2"
-        )
+        # embed = make_swint_embed(
+        #    train_df, swint_model, "train", fold, path="swint_embed_3"
+        # )
+        # val_embed = make_swint_embed(
+        #    val_df, swint_model, "val", fold, path="swint_embed_3"
+        # )
 
-        # embed = np.load(f"swint_embed/swint_embed_train_{fold}.npy")
-        # val_embed = np.load(f"swint_embed/swint_embed_val_{fold}.npy")
+        embed = np.load(f"swint_embed_3/swint_embed_train_{fold}.npy")
+        val_embed = np.load(f"swint_embed_3/swint_embed_val_{fold}.npy")
 
         # train svr
         svr = train_svr(train_df, embed)
@@ -418,6 +427,7 @@ def inference_ensemble_state_dict(df_test, model_path, mode, w_svr=0.2, w_lgbm=0
 
 
 def convert_ckpt_to_state_dict(src_path, dst_path, fold):
+    os.makedirs(dst_path, exist_ok=True)
     swint_model = swint.Model.load_from_checkpoint(
         f"{src_path}/best_loss_fold_{fold}.ckpt",
         cfg=config,
@@ -573,9 +583,9 @@ def main():
     # df = pd.read_csv(os.path.join(config.root, "train.csv"))
     # experiment(df, "test")
 
-    model_path = "model_submission_6"
-    # df = pd.read_csv(os.path.join(config.root, "train.csv"))
-    # train_ensemble(df, model_path)
+    model_path = "model_submission_7"
+    df = pd.read_csv(os.path.join(config.root, "train.csv"))
+    train_ensemble(df, model_path)
     # tune_lightgbm(df)
     # tune_svr(df)
 
@@ -583,13 +593,13 @@ def main():
     # prediction = inference_ensemble(df_test, model_path)
     # print(prediction)
 
-    df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
-    prediction = inference_ensemble_state_dict(
-        df_test.copy(),
-        "model_submission_6",
-        mode="swint_svr",
-    )
-    print(prediction)
+    # df_test = pd.read_csv(os.path.join(config.root, "test.csv"))
+    # prediction = inference_ensemble_state_dict(
+    #    df_test.copy(),
+    #    "model_submission_6",
+    #    mode="swint_svr",
+    # )
+    # print(prediction)
     # make_submission(df_test, prediction, ".")
 
 
